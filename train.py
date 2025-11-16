@@ -38,6 +38,7 @@ class Hyperparameters:
     vocab_size = 50_257
     val_loss_every = 125
     save_checkpoint = False
+    dataset_mode = "fineweb"  # options: fineweb, combined, cbt, easymath
 
 
 # -----------------------------------------------------------------------------
@@ -78,6 +79,18 @@ def distributed_data_generator(
         inputs = buf.to(device="cuda", dtype=torch.int64, non_blocking=True)
         pos += batch_size
         yield inputs
+
+
+def course_data_generator(loader, device):
+    iterator = iter(loader)
+    while True:
+        try:
+            batch = next(iterator)
+        except StopIteration:
+            iterator = iter(loader)
+            batch = next(iterator)
+        seq = batch["input_ids"].squeeze(0).to(device=device, dtype=torch.int64, non_blocking=True)
+        yield seq
 
 
 # -----------------------------------------------------------------------------
@@ -208,12 +221,88 @@ def get_lr(step: int) -> float:
 
 model = torch.compile(model, dynamic=False)
 
-train_loader = distributed_data_generator(
-    args.train_files,
-    world_size * args.train_seq_len,
-    rank,
-    world_size,
-)
+# Data selection: fineweb (default) or course datasets
+use_fineweb = args.dataset_mode == "fineweb"
+course_val_steps = None
+course_seq_len = None
+
+if use_fineweb:
+    train_loader = distributed_data_generator(
+        args.train_files,
+        world_size * args.train_seq_len,
+        rank,
+        world_size,
+    )
+else:
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).resolve().parent))
+    candidate_roots = [
+        Path(__file__).resolve().parents[3] / "data",
+        Path(__file__).resolve().parents[2] / "data",
+        Path(__file__).resolve().parents[1] / "cs2420-cs2823R-final-project" / "data",
+        Path(__file__).resolve().parents[1] / "data",
+    ]
+    data_root = next((p for p in candidate_roots if p.exists()), None)
+    if data_root is None:
+        raise FileNotFoundError("Could not find course data directory")
+
+    sys.path.append(str(data_root.parent))
+    from datasets import load_from_disk  # type: ignore
+    from transformers import AutoTokenizer  # type: ignore
+    from torch.utils.data import DataLoader, random_split
+    from data.combined_dataset import CombinedDataset  # type: ignore
+    from data.cbt_dataset import CBTDataset  # type: ignore
+    from data.easymath_dataset import EasyMathDataset  # type: ignore
+
+    cbt_data = load_from_disk(str(data_root / "cbt"))
+    easymath_data = load_from_disk(str(data_root / "easymath"))
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer.pad_token = tokenizer.eos_token
+    block_size = 64
+    if args.dataset_mode == "combined":
+        dataset = CombinedDataset(
+            dataset1=cbt_data,
+            dataset2=easymath_data,
+            tokenizer=tokenizer,
+            max_length=block_size,
+            balance=True,
+        )
+    elif args.dataset_mode == "cbt":
+        dataset = CBTDataset(
+            dataset=cbt_data,
+            tokenizer=tokenizer,
+            max_length=block_size,
+        )
+    elif args.dataset_mode == "easymath":
+        dataset = EasyMathDataset(
+            dataset=easymath_data,
+            tokenizer=tokenizer,
+            max_length=block_size,
+        )
+    else:
+        raise ValueError(f"Unsupported dataset_mode: {args.dataset_mode}")
+
+    train_size = int(0.9 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+
+    train_loader_dl = DataLoader(
+        train_dataset,
+        batch_size=1,
+        shuffle=True,
+        pin_memory=True,
+    )
+    val_loader_dl = DataLoader(
+        val_dataset,
+        batch_size=1,
+        shuffle=False,
+        pin_memory=True,
+    )
+    train_loader = course_data_generator(train_loader_dl, device)
+    val_loader_course = course_data_generator(val_loader_dl, device)
+    course_val_steps = len(val_loader_dl)
+    course_seq_len = block_size
+
 training_time_ms = 0
 torch.cuda.synchronize()
 t0 = time.perf_counter()
@@ -229,15 +318,19 @@ for step in range(args.num_iterations + 1):
         training_time_ms += 1000 * (time.perf_counter() - t0)
 
         # validation via evaluate()
-        val_batch = world_size * args.val_seq_len
-        assert args.val_tokens % val_batch == 0
-        val_steps = args.val_tokens // val_batch
-        val_loader = distributed_data_generator(args.val_files, val_batch, rank, world_size)
+        if use_fineweb:
+            val_batch = world_size * args.val_seq_len
+            assert args.val_tokens % val_batch == 0
+            val_steps = args.val_tokens // val_batch
+            val_loader = distributed_data_generator(args.val_files, val_batch, rank, world_size)
+        else:
+            val_loader = val_loader_course
+            val_steps = course_val_steps
         val_loss = evaluate(model, val_loader, val_steps)
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
 
         num_toks = step * args.grad_accum_steps_per_device \
-            * args.train_seq_len * world_size
+            * (course_seq_len or args.train_seq_len) * world_size
         print0(
             f"step:{step}/{args.num_iterations} "
             f"val_loss:{val_loss:.4f} "
