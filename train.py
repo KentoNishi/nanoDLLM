@@ -234,25 +234,24 @@ if use_fineweb:
         world_size,
     )
 else:
-    from pathlib import Path
-    sys.path.append(str(Path(__file__).resolve().parent))
-    candidate_roots = [
-        Path(__file__).resolve().parents[3] / "data",
-        Path(__file__).resolve().parents[2] / "data",
-        Path(__file__).resolve().parents[1] / "cs2420-cs2823R-final-project" / "data",
-        Path(__file__).resolve().parents[1] / "data",
-    ]
-    data_root = next((p for p in candidate_roots if p.exists()), None)
-    if data_root is None:
-        raise FileNotFoundError("Could not find course data directory")
+    try:
+        import cs2420_cs2823r_final_project as cs_project  # type: ignore
+        from cs2420_cs2823r_final_project.data.combined_dataset import CombinedDataset  # type: ignore
+        from cs2420_cs2823r_final_project.data.cbt_dataset import CBTDataset  # type: ignore
+        from cs2420_cs2823r_final_project.data.easymath_dataset import EasyMathDataset  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "Install cs2420_cs2823r_final_project via `pip install -e .` before using dataset_mode "
+            f"'{args.dataset_mode}'."
+        ) from exc
 
-    sys.path.append(str(data_root.parent))
     from datasets import load_from_disk  # type: ignore
     from transformers import AutoTokenizer  # type: ignore
     from torch.utils.data import DataLoader, random_split
-    from data.combined_dataset import CombinedDataset  # type: ignore
-    from data.cbt_dataset import CBTDataset  # type: ignore
-    from data.easymath_dataset import EasyMathDataset  # type: ignore
+
+    data_root = Path(cs_project.__file__).resolve().parent / "data"
+    if not data_root.exists():
+        raise FileNotFoundError(f"Could not locate course data directory under {data_root}")
 
     cbt_data = load_from_disk(str(data_root / "cbt"))
     easymath_data = load_from_disk(str(data_root / "easymath"))

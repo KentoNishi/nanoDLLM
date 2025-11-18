@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cs2420-cs2823r-final-project"
+version = "0.1.0"
+description = "CS2420/CS2823R final project components"
+authors = [{name = "CS2420/CS2823R"}]
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["cs2420_cs2823r_final_project*"]
