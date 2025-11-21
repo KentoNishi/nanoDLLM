@@ -16,7 +16,7 @@ torchrun --standalone --nproc_per_node=$(nvidia-smi -L | wc -l) train.py
 
 ### Data options
 - `dataset_mode=fineweb` (default): trains on FineWebEdu binary shards at `data/finewebedu10B/*`.
-- `dataset_mode=combined|cbt|easymath`: uses the course CBT/EasyMath datasets if present. Set in `Hyperparameters` or via env var `DATASET_MODE`.
+- `dataset_mode=combined|cbt|easymath`: uses the course CBT/EasyMath datasets provided by the `cs2420_cs2823r_final_project` package (install with `pip install -e .`). Set in `Hyperparameters` or via env var `DATASET_MODE`.
 
 ## Notes
 Block Diffusion masks tokens per block, applies block-aware attention, and trains with a masked cross-entropy objective weighted by noise level. See `model.py` for details.
