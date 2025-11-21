@@ -38,7 +38,7 @@ class Hyperparameters:
     vocab_size = 50_257
     val_loss_every = 125
     save_checkpoint = False
-    dataset_mode = "fineweb"  # options: fineweb, combined, cbt, easymath
+    dataset_mode = "fineweb"  # options: fineweb, combined, combined_guidance, cbt, easymath
 
 
 # -----------------------------------------------------------------------------
@@ -81,6 +81,12 @@ def distributed_data_generator(
         yield inputs
 
 
+def unpack_sample(sample):
+    if isinstance(sample, tuple) and len(sample) == 2:
+        return sample
+    return sample, None
+
+
 def course_data_generator(loader, device):
     iterator = iter(loader)
     while True:
@@ -90,7 +96,10 @@ def course_data_generator(loader, device):
             iterator = iter(loader)
             batch = next(iterator)
         seq = batch["input_ids"].squeeze(0).to(device=device, dtype=torch.int64, non_blocking=True)
-        yield seq
+        guidance = batch.get("guidance_id")
+        if guidance is not None:
+            guidance = guidance.squeeze(0).to(device=device, dtype=torch.long, non_blocking=True)
+        yield seq, guidance
 
 
 # -----------------------------------------------------------------------------
@@ -103,16 +112,16 @@ def evaluate(model, loader, steps):
     total = 0.0
     with torch.no_grad():
         for _ in range(steps):
-            x = next(loader)
-            total += model(x)
+            x, guidance = unpack_sample(next(loader))
+            total += model(x, guidance)
     return total / steps
 
 
 def train_step(model, loader, step, optimizers, optimizer2, accum_steps):
     # forward/backward accumulation
     for _ in range(accum_steps):
-        x = next(loader)
-        loss = model(x)
+        x, guidance = unpack_sample(next(loader))
+        loss = model(x, guidance)
         loss.backward()
 
     # gradient all‐reduce across ranks
@@ -137,6 +146,7 @@ def train_step(model, loader, step, optimizers, optimizer2, accum_steps):
 
 
 args = Hyperparameters()
+guidance_enabled = args.dataset_mode == "combined_guidance"
 
 rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
@@ -172,7 +182,10 @@ print0(os.popen("nvidia-smi").read())
 print0("=" * 100)
 
 
-model = BlockGPT(BlockGPTConfig()).cuda()
+model_config = BlockGPTConfig(
+    num_guidance_tokens=2 if guidance_enabled else 0,
+)
+model = BlockGPT(model_config).cuda()
 
 for m in model.modules():
     if isinstance(m, torch.nn.Embedding):
@@ -236,7 +249,7 @@ if use_fineweb:
 else:
     try:
         import cs2420_cs2823r_final_project as cs_project  # type: ignore
-        from cs2420_cs2823r_final_project.data.combined_dataset import CombinedDataset  # type: ignore
+        from cs2420_cs2823r_final_project.data.combined_dataset import CombinedDataset, CombinedDatasetForGuidance  # type: ignore
         from cs2420_cs2823r_final_project.data.cbt_dataset import CBTDataset  # type: ignore
         from cs2420_cs2823r_final_project.data.easymath_dataset import EasyMathDataset  # type: ignore
     except ImportError as exc:
@@ -260,6 +273,14 @@ else:
     block_size = 64
     if args.dataset_mode == "combined":
         dataset = CombinedDataset(
+            dataset1=cbt_data,
+            dataset2=easymath_data,
+            tokenizer=tokenizer,
+            max_length=block_size,
+            balance=True,
+        )
+    elif args.dataset_mode == "combined_guidance":
+        dataset = CombinedDatasetForGuidance(
             dataset1=cbt_data,
             dataset2=easymath_data,
             tokenizer=tokenizer,
@@ -298,7 +319,6 @@ else:
         pin_memory=True,
     )
     train_loader = course_data_generator(train_loader_dl, device)
-    val_loader_course = course_data_generator(val_loader_dl, device)
     course_val_steps = len(val_loader_dl)
     course_seq_len = block_size
 
@@ -323,7 +343,7 @@ for step in range(args.num_iterations + 1):
             val_steps = args.val_tokens // val_batch
             val_loader = distributed_data_generator(args.val_files, val_batch, rank, world_size)
         else:
-            val_loader = val_loader_course
+            val_loader = course_data_generator(val_loader_dl, device)
             val_steps = course_val_steps
         val_loss = evaluate(model, val_loader, val_steps)
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)

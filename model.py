@@ -24,6 +24,7 @@ class BlockGPTConfig:
     diffusion_block_size: int = 16
     t_lower: float = 0.3
     t_upper: float = 0.8
+    num_guidance_tokens: int = 0
 
 
 def norm(x):
@@ -146,6 +147,7 @@ class BlockGPT(nn.Module):
 
         self.embed = nn.Embedding(config.vocab_size, config.model_dim)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.num_layers)])
+        self.guidance_embed = nn.Embedding(config.num_guidance_tokens, config.model_dim) if config.num_guidance_tokens > 0 else None
 
         adj_vocab_size = ((config.vocab_size + 127) // 128) * 128  # out embed, round to nearest 128 for efficiency
         self.lm_head = CastedLinear(config.model_dim, adj_vocab_size, zero_init=True)
@@ -174,7 +176,7 @@ class BlockGPT(nn.Module):
         S = 2 * L
         return create_block_mask(block_diffusion_mask, None, None, S, S)
 
-    def forward(self, input_seq: Tensor):
+    def forward(self, input_seq: Tensor, guidance_id: Tensor | None = None):
         assert input_seq.ndim == 1
 
         # construct attention rules & block mask
@@ -197,7 +199,11 @@ class BlockGPT(nn.Module):
         pos_id = pos_id.repeat(2)
 
         # Embedding & U-net backbone forward
-        x = x0 = norm(self.embed(seq)[None])
+        emb = self.embed(seq)[None]
+        if self.guidance_embed is not None and guidance_id is not None:
+            guidance_vec = self.guidance_embed(guidance_id.view(1)).view(1, 1, -1)
+            emb = emb + guidance_vec
+        x = x0 = norm(emb)
         v_residual = None
 
         skip_conns, n = [], len(self.skip_w)
