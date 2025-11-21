@@ -241,8 +241,8 @@ else:
         from cs2420_cs2823r_final_project.data.easymath_dataset import EasyMathDataset  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
-            "Install cs2420_cs2823r_final_project via `pip install -e .` before using dataset_mode "
-            f"'{args.dataset_mode}'."
+            "Install the `conditional_dllm_class_project` package (from cs2420_cs2823r_final_project/) "
+            f"before using dataset_mode '{args.dataset_mode}'."
         ) from exc
 
     from datasets import load_from_disk  # type: ignore
