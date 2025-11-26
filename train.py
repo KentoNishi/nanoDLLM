@@ -30,9 +30,9 @@ class Hyperparameters:
     train_files = "data/finewebedu10B/finewebedu_train_*.bin"
     val_files = "data/finewebedu10B/finewebedu_val_*.bin"
     val_tokens = 10_485_760
-    train_seq_len = 16 * 1024
-    val_seq_len = 64 * 1024
-    grad_accum_steps_per_device = (8 // int(os.environ["WORLD_SIZE"]))
+    train_seq_len = 4 * 1024
+    val_seq_len = 8 * 1024
+    grad_accum_steps_per_device = 1
     num_iterations = 10_000
     cooldown_frac = 0.8
     vocab_size = 50_257
