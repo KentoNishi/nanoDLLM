@@ -16,10 +16,10 @@ class BlockGPTConfig:
     bos_id: int = 50_256
     mask_id: int = 50_257
     num_layers: int = 12
-    num_heads: int = 6
-    model_dim: int = 768
+    num_heads: int = 10
+    model_dim: int = 640
     max_seq_len: int = int(2**16)
-    head_dim: int = 128
+    head_dim: int = 64
     intermediate_dim: int | None = None
     diffusion_block_size: int = 16
     t_lower: float = 0.3
