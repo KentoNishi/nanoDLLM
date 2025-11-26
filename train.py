@@ -37,8 +37,11 @@ class Hyperparameters:
     cooldown_frac = 0.8
     vocab_size = 50_257
     val_loss_every = 125
-    save_checkpoint = False
+    save_checkpoint = True
     dataset_mode = "fineweb"  # options: fineweb, combined, combined_guidance, cbt, easymath
+    run_id: str | None = None
+    resume_from: str | None = None
+    pretrained_checkpoint: str | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -147,6 +150,7 @@ def train_step(model, loader, step, optimizers, optimizer2, accum_steps):
 
 args = Hyperparameters()
 guidance_enabled = args.dataset_mode == "combined_guidance"
+is_finetune = args.dataset_mode != "fineweb"
 
 rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
@@ -157,12 +161,26 @@ dist.init_process_group(backend="nccl", device_id=device)
 dist.barrier()
 master_process = rank == 0
 
-logfile = None
+default_run_id = args.run_id or os.environ.get("RUN_ID")
+if default_run_id is None:
+    default_run_id = "fineweb-base" if not is_finetune else f"{args.dataset_mode}-finetune"
+run_id = default_run_id or str(uuid.uuid4())
+logs_root = Path("logs")
+run_dir = logs_root / run_id
+logfile = str(run_dir / "events.txt")
 if master_process:
-    run_id = uuid.uuid4()
-    os.makedirs("logs", exist_ok=True)
-    logfile = f"logs/{run_id}.txt"
+    run_dir.mkdir(parents=True, exist_ok=True)
     print(logfile)
+resume_path = args.resume_from
+if resume_path is None:
+    candidate = run_dir / "state_latest.pt"
+    if candidate.exists():
+        resume_path = str(candidate)
+pretrained_path = args.pretrained_checkpoint or os.environ.get("DLLM_PRETRAINED_CHECKPOINT")
+if pretrained_path is None:
+    default_base = logs_root / "fineweb-base" / "state_latest.pt"
+    if default_base.exists():
+        pretrained_path = str(default_base)
 
 
 def print0(s: str, console: bool = False):
@@ -221,6 +239,58 @@ optimizers = [optimizer1, optimizer2]
 for opt in optimizers:
     for group in opt.param_groups:
         group["initial_lr"] = group["lr"]
+
+start_step = 0
+best_val_loss = float("inf")
+
+def _load_state_dict(path: str, load_optim: bool):
+    checkpoint = torch.load(path, map_location=device)
+    state_dict = checkpoint['model'] if isinstance(checkpoint, dict) and 'model' in checkpoint else checkpoint
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if master_process:
+        if missing:
+            print0(f"Missing keys when loading {path}: {missing}")
+        if unexpected:
+            print0(f"Unexpected keys when loading {path}: {unexpected}")
+    if load_optim and isinstance(checkpoint, dict) and 'optimizers' in checkpoint:
+        for opt, state in zip(optimizers, checkpoint['optimizers']):
+            opt.load_state_dict(state)
+    return checkpoint
+
+if resume_path:
+    ckpt = _load_state_dict(resume_path, load_optim=True)
+    start_step = ckpt.get('step', 0) + 1
+    best_val_loss = ckpt.get('best_val_loss', best_val_loss)
+    if master_process:
+        print0(f"Resumed training from {resume_path} at step {start_step}")
+elif is_finetune:
+    if not pretrained_path or not Path(pretrained_path).exists():
+        raise FileNotFoundError(
+            "A pretrained checkpoint is required for finetuning. "
+            "Set `pretrained_checkpoint` or environment variable DLLM_PRETRAINED_CHECKPOINT."
+        )
+    _load_state_dict(pretrained_path, load_optim=False)
+    if master_process:
+        print0(f"Initialized weights from pretrained checkpoint {pretrained_path}")
+
+
+def persist_checkpoint(step: int, final: bool = False):
+    if not master_process or not args.save_checkpoint:
+        return
+    ckpt = dict(
+        step=step,
+        code=code,
+        model=model.state_dict(),
+        optimizers=[opt.state_dict() for opt in optimizers],
+        best_val_loss=best_val_loss,
+        dataset_mode=args.dataset_mode,
+        run_id=run_id,
+    )
+    latest_path = run_dir / "state_latest.pt"
+    torch.save(ckpt, latest_path)
+    if final:
+        final_path = run_dir / f"state_step{step:06d}.pt"
+        torch.save(ckpt, final_path)
 
 
 def get_lr(step: int) -> float:
@@ -326,7 +396,8 @@ training_time_ms = 0
 torch.cuda.synchronize()
 t0 = time.perf_counter()
 
-for step in range(args.num_iterations + 1):
+last_completed_step = start_step - 1
+for step in range(start_step, args.num_iterations + 1):
     last_step = step == args.num_iterations
 
     # Validation
@@ -358,6 +429,9 @@ for step in range(args.num_iterations + 1):
             f"tokens:{num_toks / 1e6:.2f}M",
             console=True,
         )
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+        persist_checkpoint(step, final=False)
         model.train()
         torch.cuda.synchronize()
         t0 = time.perf_counter()
@@ -385,6 +459,9 @@ for step in range(args.num_iterations + 1):
         f"step_avg:{approx_time / (step + 1):.2f}ms",
         console=True,
     )
+    last_completed_step = step
+
+persist_checkpoint(last_completed_step, final=True)
 
 print0(
     f"peak memory allocated: "
