@@ -25,6 +25,7 @@ class BlockGPTConfig:
     t_lower: float = 0.3
     t_upper: float = 0.8
     num_guidance_tokens: int = 0
+    dropout: float = 0.0
 
 
 def norm(x):
@@ -148,6 +149,7 @@ class BlockGPT(nn.Module):
         self.embed = nn.Embedding(config.vocab_size, config.model_dim)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.num_layers)])
         self.guidance_embed = nn.Embedding(config.num_guidance_tokens, config.model_dim) if config.num_guidance_tokens > 0 else None
+        self.dropout = nn.Identity() if config.dropout == 0.0 else nn.Dropout(config.dropout)
 
         adj_vocab_size = ((config.vocab_size + 127) // 128) * 128  # out embed, round to nearest 128 for efficiency
         self.lm_head = CastedLinear(config.model_dim, adj_vocab_size, zero_init=True)
@@ -203,6 +205,7 @@ class BlockGPT(nn.Module):
         if self.guidance_embed is not None and guidance_id is not None:
             guidance_vec = self.guidance_embed(guidance_id.view(1)).view(1, 1, -1)
             emb = emb + guidance_vec
+        emb = self.dropout(emb)
         x = x0 = norm(emb)
         v_residual = None
 

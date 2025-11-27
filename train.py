@@ -3,6 +3,7 @@ import sys
 import uuid
 import time
 import glob
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +43,29 @@ class Hyperparameters:
     run_id: str | None = None
     resume_from: str | None = None
     pretrained_checkpoint: str | None = None
+
+
+def parse_cli_overrides():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--dataset_mode', choices=[
+        'fineweb', 'combined', 'combined_guidance', 'cbt', 'easymath'
+    ], default=None)
+    parser.add_argument('--run_id', default=None)
+    parser.add_argument('--resume_from', default=None)
+    parser.add_argument('--pretrained_checkpoint', default=None)
+    parser.add_argument('--train_seq_len', type=int, default=None)
+    parser.add_argument('--val_seq_len', type=int, default=None)
+    parser.add_argument('--grad_accum_steps_per_device', type=int, default=None)
+    parser.add_argument('--num_iterations', type=int, default=None)
+    parser.add_argument('--val_loss_every', type=int, default=None)
+    parser.add_argument('--val_tokens', type=int, default=None)
+    parser.add_argument('--cooldown_frac', type=float, default=None)
+    parser.add_argument('--save_checkpoint', dest='save_checkpoint', action='store_true')
+    parser.add_argument('--no-save_checkpoint', dest='save_checkpoint', action='store_false')
+    parser.set_defaults(save_checkpoint=None)
+    parser.add_argument('--local_rank', type=int, default=None)
+    cli_args, _ = parser.parse_known_args()
+    return cli_args
 
 
 # -----------------------------------------------------------------------------
@@ -148,9 +172,32 @@ def train_step(model, loader, step, optimizers, optimizer2, accum_steps):
     model.zero_grad(set_to_none=True)
 
 
+cli_overrides = parse_cli_overrides()
 args = Hyperparameters()
-guidance_enabled = args.dataset_mode == "combined_guidance"
-is_finetune = args.dataset_mode != "fineweb"
+
+def _override(field):
+    value = getattr(cli_overrides, field, None)
+    if value is not None:
+        setattr(args, field, value)
+
+for name in [
+    'dataset_mode', 'run_id', 'resume_from', 'pretrained_checkpoint',
+    'train_seq_len', 'val_seq_len', 'grad_accum_steps_per_device',
+    'num_iterations', 'val_loss_every', 'val_tokens', 'cooldown_frac'
+]:
+    _override(name)
+
+if getattr(cli_overrides, 'save_checkpoint', None) is not None:
+    args.save_checkpoint = cli_overrides.save_checkpoint
+
+guidance_enabled = args.dataset_mode == combined_guidance
+is_finetune = args.dataset_mode != fineweb
+
+if is_finetune:
+    if args.num_iterations > 2000:
+        args.num_iterations = 2000
+    if args.val_loss_every > 50:
+        args.val_loss_every = 50
 
 rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
@@ -202,6 +249,7 @@ print0("=" * 100)
 
 model_config = BlockGPTConfig(
     num_guidance_tokens=2 if guidance_enabled else 0,
+    dropout=0.3 if is_finetune else 0.0,
 )
 model = BlockGPT(model_config).cuda()
 
@@ -222,17 +270,26 @@ embed_params = [p for n, p in model.named_parameters() if "embed" in n]
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
 head_params = [model.lm_head.weight]
 
+if is_finetune:
+    head_lr = embed_lr = scalar_lr = 6e-5
+    muon_lr = 6e-5
+else:
+    head_lr = 0.0011
+    embed_lr = 0.06
+    scalar_lr = 0.04
+    muon_lr = 0.025
+
 adam_params = [
-    dict(params=head_params, lr=0.0011),
-    dict(params=embed_params, lr=0.06),
-    dict(params=scalar_params, lr=0.04),
+    dict(params=head_params, lr=head_lr),
+    dict(params=embed_params, lr=embed_lr),
+    dict(params=scalar_params, lr=scalar_lr),
 ]
 optimizer1 = torch.optim.Adam(
     adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True
 )
 optimizer2 = Muon(
     hidden_matrix_params,
-    lr=0.025,
+    lr=muon_lr,
     momentum=0.95,
 )
 optimizers = [optimizer1, optimizer2]
