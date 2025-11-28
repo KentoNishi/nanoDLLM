@@ -178,10 +178,9 @@ class BlockGPT(nn.Module):
         S = 2 * L
         return create_block_mask(block_diffusion_mask, None, None, S, S)
 
-    def forward(self, input_seq: Tensor, guidance_id: Tensor | None = None):
+    def _forward_tokens(self, input_seq: Tensor, guidance_id: Tensor | None = None):
         assert input_seq.ndim == 1
 
-        # construct attention rules & block mask
         doc_id = (input_seq == self.config.bos_id).cumsum(0)
         p = torch.arange(input_seq.size(0), device=input_seq.device)
         pos_id = p - torch.where(input_seq == self.config.bos_id, p, -1).cummax(0).values
@@ -190,17 +189,14 @@ class BlockGPT(nn.Module):
 
         block_mask = self.create_blockmask(doc_id, block_id)
 
-        # Apply noise to sequence
         noise_range = (self.config.t_lower, self.config.t_upper) if self.training else (0.0, 1.0)
         rand = torch.rand_like(input_seq, dtype=torch.float32)
         t = torch.empty_like(rand).uniform_(*noise_range)[block_id]
         noisy_seq = input_seq.masked_fill(rand >= (1 - t), self.config.mask_id)
 
-        # Concat noisy + clean into seq and repeat pos_ids
         seq = torch.cat([noisy_seq, input_seq], dim=0)
         pos_id = pos_id.repeat(2)
 
-        # Embedding & U-net backbone forward
         emb = self.embed(seq)[None]
         if self.guidance_embed is not None and guidance_id is not None:
             guidance_vec = self.guidance_embed(guidance_id.view(1)).view(1, 1, -1)
@@ -217,14 +213,29 @@ class BlockGPT(nn.Module):
             if i < n:
                 skip_conns.append(x)
 
-        x = x[:, :input_seq.size(0)]  # Get logits for noisy tokens only
+        x = x[:, :input_seq.size(0)]
         x = norm(x)
         logits = self.lm_head(x).float()
 
-        # Get loss for masked tokens
         mask = (noisy_seq == self.config.mask_id)
         targets = torch.where(mask, input_seq, torch.full_like(input_seq, -100))
-        losses = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='none')
         weights = (1.0 / (t + 1e-3)).type_as(logits)
-        loss = (losses * weights * mask).sum() / input_seq.size(0)
+        return (
+            logits,
+            targets.unsqueeze(0),
+            mask.unsqueeze(0).type_as(weights),
+            weights.unsqueeze(0),
+            input_seq.size(0),
+        )
+
+    def forward(self, input_seq: Tensor, guidance_id: Tensor | None = None, return_details: bool = False):
+        logits, targets, mask, weights, seq_len = self._forward_tokens(input_seq, guidance_id)
+        if return_details:
+            return logits, targets, mask, weights
+        losses = F.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            targets.view(-1),
+            reduction='none'
+        ).view_as(targets)
+        loss = (losses * weights * mask).sum() / seq_len
         return loss
