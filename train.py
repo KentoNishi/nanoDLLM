@@ -190,8 +190,8 @@ for name in [
 if getattr(cli_overrides, 'save_checkpoint', None) is not None:
     args.save_checkpoint = cli_overrides.save_checkpoint
 
-guidance_enabled = args.dataset_mode == combined_guidance
-is_finetune = args.dataset_mode != fineweb
+guidance_enabled = args.dataset_mode == 'combined_guidance'
+is_finetune = args.dataset_mode != 'fineweb'
 
 if is_finetune:
     if args.num_iterations > 2000:
