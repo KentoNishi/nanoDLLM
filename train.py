@@ -37,7 +37,7 @@ class Hyperparameters:
     num_iterations = 10_000
     cooldown_frac = 0.8
     vocab_size = 50_257
-    val_loss_every = 125
+    val_loss_every = 10
     save_checkpoint = True
     dataset_mode = "fineweb"  # options: fineweb, combined, combined_guidance, cbt, easymath
     run_id: str | None = None
@@ -194,10 +194,10 @@ guidance_enabled = args.dataset_mode == 'combined_guidance'
 is_finetune = args.dataset_mode != 'fineweb'
 
 if is_finetune:
-    if args.num_iterations > 2000:
-        args.num_iterations = 2000
-    if args.val_loss_every > 50:
-        args.val_loss_every = 50
+    if args.num_iterations > 250:
+        args.num_iterations = 250
+    if args.val_loss_every > 5:
+        args.val_loss_every = 5
 
 rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
@@ -266,17 +266,25 @@ hidden_matrix_params = [
     for n, p in model.blocks.named_parameters()
     if p.ndim >= 2 and "embed" not in n
 ]
-embed_params = [p for n, p in model.named_parameters() if "embed" in n]
+guidance_params = []
+embed_params = []
+for name, param in model.named_parameters():
+    if "guidance_embed" in name:
+        guidance_params.append(param)
+    elif "embed" in name:
+        embed_params.append(param)
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
 head_params = [model.lm_head.weight]
 
 if is_finetune:
     head_lr = embed_lr = scalar_lr = 6e-5
+    guidance_lr = 6e-4
     muon_lr = 6e-5
 else:
     head_lr = 0.0011
     embed_lr = 0.06
     scalar_lr = 0.04
+    guidance_lr = 0.06
     muon_lr = 0.025
 
 adam_params = [
@@ -284,6 +292,8 @@ adam_params = [
     dict(params=embed_params, lr=embed_lr),
     dict(params=scalar_params, lr=scalar_lr),
 ]
+if guidance_params:
+    adam_params.append(dict(params=guidance_params, lr=guidance_lr))
 optimizer1 = torch.optim.Adam(
     adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True
 )
