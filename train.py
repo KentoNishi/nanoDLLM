@@ -43,6 +43,7 @@ class Hyperparameters:
     run_id: str | None = None
     resume_from: str | None = None
     pretrained_checkpoint: str | None = None
+    guidance_zero_init: bool = False
 
 
 def parse_cli_overrides():
@@ -64,6 +65,7 @@ def parse_cli_overrides():
     parser.add_argument('--no-save_checkpoint', dest='save_checkpoint', action='store_false')
     parser.set_defaults(save_checkpoint=None)
     parser.add_argument('--local_rank', type=int, default=None)
+    parser.add_argument('--zero_guidance_init', action='store_true')
     cli_args, _ = parser.parse_known_args()
     return cli_args
 
@@ -183,7 +185,8 @@ def _override(field):
 for name in [
     'dataset_mode', 'run_id', 'resume_from', 'pretrained_checkpoint',
     'train_seq_len', 'val_seq_len', 'grad_accum_steps_per_device',
-    'num_iterations', 'val_loss_every', 'val_tokens', 'cooldown_frac'
+    'num_iterations', 'val_loss_every', 'val_tokens', 'cooldown_frac',
+    'guidance_zero_init'
 ]:
     _override(name)
 
@@ -194,8 +197,8 @@ guidance_enabled = args.dataset_mode == 'combined_guidance'
 is_finetune = args.dataset_mode != 'fineweb'
 
 if is_finetune:
-    if args.num_iterations > 250:
-        args.num_iterations = 250
+    if args.num_iterations > 500:
+        args.num_iterations = 500
     if args.val_loss_every > 5:
         args.val_loss_every = 5
 
@@ -250,6 +253,7 @@ print0("=" * 100)
 model_config = BlockGPTConfig(
     num_guidance_tokens=2 if guidance_enabled else 0,
     dropout=0.3 if is_finetune else 0.0,
+    guidance_zero_init=args.guidance_zero_init,
 )
 model = BlockGPT(model_config).cuda()
 

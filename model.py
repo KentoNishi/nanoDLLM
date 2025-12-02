@@ -26,6 +26,7 @@ class BlockGPTConfig:
     t_upper: float = 0.8
     num_guidance_tokens: int = 0
     dropout: float = 0.0
+    guidance_zero_init: bool = False
 
 
 def norm(x):
@@ -149,7 +150,7 @@ class BlockGPT(nn.Module):
         self.embed = nn.Embedding(config.vocab_size, config.model_dim)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.num_layers)])
         self.guidance_embed = nn.Embedding(config.num_guidance_tokens, config.model_dim) if config.num_guidance_tokens > 0 else None
-        if self.guidance_embed is not None:
+        if self.guidance_embed is not None and config.guidance_zero_init:
             nn.init.zeros_(self.guidance_embed.weight)
         self.dropout = nn.Identity() if config.dropout == 0.0 else nn.Dropout(config.dropout)
 
