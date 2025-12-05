@@ -45,7 +45,7 @@ torchrun --standalone --nproc_per_node=$(nvidia-smi -L | wc -l) train.py
 ### Data options
 - `dataset_mode=fineweb` (default): trains on FineWebEdu shards at `data/finewebedu10B/*`.
 - `dataset_mode=combined|combined_guidance|cbt|easymath`: uses the CBT/EasyMath datasets provided by the `conditional_dllm_class_project` package (install by running `pip install -e .` inside that repo directory). `combined_guidance` injects a two-class guidance signal for conditioning the diffusion model.
-- For guided evaluation, run `python path/to/conditional_dllm_class_project/eval/eval_diffusion.py --use-guidance ...` with checkpoints produced by the conditional run.
+- For guided evaluation, run `python conditional_dllm_class_project/eval/eval_diffusion.py --use-guidance ...` with checkpoints produced by the conditional run.
 
 ## Notes
 Block Diffusion masks tokens per block, applies block-aware attention, and trains with a masked cross-entropy objective weighted by noise level. See `model.py` for details.
