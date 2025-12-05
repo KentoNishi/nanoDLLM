@@ -23,9 +23,11 @@ torchrun --standalone --nproc_per_node=$(nvidia-smi -L | wc -l) train.py
    - Checkpoints land in `logs/fineweb-base/state_latest.pt`.
    - Killing/restarting the same command automatically resumes from `state_latest.pt`.
 
-2. **Finetune on the course combined dataset**
+2. **Finetune on the combined CBT/EasyMath dataset**
    ```bash
-   pip install -e cs2420_cs2823r_final_project
+   cd path/to/conditional_dllm_class_project
+   pip install -e .
+   cd -
    torchrun --standalone --nproc_per_node=$(nvidia-smi -L | wc -l) \
      train.py --dataset_mode=combined --run_id combined-ft \
      --pretrained_checkpoint logs/fineweb-base/state_latest.pt
@@ -42,8 +44,8 @@ torchrun --standalone --nproc_per_node=$(nvidia-smi -L | wc -l) train.py
 
 ### Data options
 - `dataset_mode=fineweb` (default): trains on FineWebEdu shards at `data/finewebedu10B/*`.
-- `dataset_mode=combined|combined_guidance|cbt|easymath`: uses the course CBT/EasyMath datasets provided by the `conditional_dllm_class_project` package (install from `cs2420_cs2823r_final_project/` via `pip install -e cs2420_cs2823r_final_project`). `combined_guidance` injects a two-class guidance signal for conditioning the diffusion model.
-- For guided evaluation, run `python cs2420_cs2823r_final_project/eval/eval_diffusion.py --use-guidance ...` with checkpoints produced by the conditional run.
+- `dataset_mode=combined|combined_guidance|cbt|easymath`: uses the CBT/EasyMath datasets provided by the `conditional_dllm_class_project` package (install by running `pip install -e .` inside that repo directory). `combined_guidance` injects a two-class guidance signal for conditioning the diffusion model.
+- For guided evaluation, run `python path/to/conditional_dllm_class_project/eval/eval_diffusion.py --use-guidance ...` with checkpoints produced by the conditional run.
 
 ## Notes
 Block Diffusion masks tokens per block, applies block-aware attention, and trains with a masked cross-entropy objective weighted by noise level. See `model.py` for details.

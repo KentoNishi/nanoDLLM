@@ -44,6 +44,7 @@ class Hyperparameters:
     resume_from: str | None = None
     pretrained_checkpoint: str | None = None
     guidance_zero_init: bool = False
+    model_variant: str = "base"
 
 
 def parse_cli_overrides():
@@ -66,6 +67,7 @@ def parse_cli_overrides():
     parser.set_defaults(save_checkpoint=None)
     parser.add_argument('--local_rank', type=int, default=None)
     parser.add_argument('--zero_guidance_init', action='store_true')
+    parser.add_argument('--model_variant', choices=['base', '500m'], default=None)
     cli_args, _ = parser.parse_known_args()
     return cli_args
 
@@ -177,6 +179,16 @@ def train_step(model, loader, step, optimizers, optimizer2, accum_steps):
 cli_overrides = parse_cli_overrides()
 args = Hyperparameters()
 
+MODEL_VARIANTS = {
+    "base": {},
+    "500m": {
+        "model_dim": 1280,
+        "num_heads": 20,
+        "num_layers": 20,
+        "head_dim": 64,
+    },
+}
+
 def _override(field):
     value = getattr(cli_overrides, field, None)
     if value is not None:
@@ -186,12 +198,17 @@ for name in [
     'dataset_mode', 'run_id', 'resume_from', 'pretrained_checkpoint',
     'train_seq_len', 'val_seq_len', 'grad_accum_steps_per_device',
     'num_iterations', 'val_loss_every', 'val_tokens', 'cooldown_frac',
-    'guidance_zero_init'
+    'guidance_zero_init', 'model_variant'
 ]:
     _override(name)
 
 if getattr(cli_overrides, 'save_checkpoint', None) is not None:
     args.save_checkpoint = cli_overrides.save_checkpoint
+
+variant_overrides = MODEL_VARIANTS.get(args.model_variant)
+if variant_overrides is None:
+    raise ValueError(f"Unknown model_variant {args.model_variant}")
+variant_suffix = "" if args.model_variant == "base" else f"-{args.model_variant}"
 
 guidance_enabled = args.dataset_mode == 'combined_guidance'
 is_finetune = args.dataset_mode != 'fineweb'
@@ -213,7 +230,8 @@ master_process = rank == 0
 
 default_run_id = args.run_id or os.environ.get("RUN_ID")
 if default_run_id is None:
-    default_run_id = "fineweb-base" if not is_finetune else f"{args.dataset_mode}-finetune"
+    base_name = "fineweb-base" if not is_finetune else f"{args.dataset_mode}-finetune"
+    default_run_id = f"{base_name}{variant_suffix}"
 run_id = default_run_id or str(uuid.uuid4())
 logs_root = Path("logs")
 run_dir = logs_root / run_id
@@ -228,7 +246,7 @@ if resume_path is None:
         resume_path = str(candidate)
 pretrained_path = args.pretrained_checkpoint or os.environ.get("DLLM_PRETRAINED_CHECKPOINT")
 if pretrained_path is None:
-    default_base = logs_root / "fineweb-base" / "state_latest.pt"
+    default_base = logs_root / f"fineweb-base{variant_suffix}" / "state_latest.pt"
     if default_base.exists():
         pretrained_path = str(default_base)
 
@@ -251,6 +269,7 @@ print0("=" * 100)
 
 
 model_config = BlockGPTConfig(
+    **variant_overrides,
     num_guidance_tokens=2 if guidance_enabled else 0,
     dropout=0.3 if is_finetune else 0.0,
     guidance_zero_init=args.guidance_zero_init,
@@ -389,14 +408,15 @@ if use_fineweb:
     )
 else:
     try:
-        import cs2420_cs2823r_final_project as cs_project  # type: ignore
-        from cs2420_cs2823r_final_project.data.combined_dataset import CombinedDataset, CombinedDatasetForGuidance  # type: ignore
-        from cs2420_cs2823r_final_project.data.cbt_dataset import CBTDataset  # type: ignore
-        from cs2420_cs2823r_final_project.data.easymath_dataset import EasyMathDataset  # type: ignore
+        import conditional_dllm_class_project as cs_project  # type: ignore
+        from conditional_dllm_class_project.data.combined_dataset import CombinedDataset, CombinedDatasetForGuidance  # type: ignore
+        from conditional_dllm_class_project.data.cbt_dataset import CBTDataset  # type: ignore
+        from conditional_dllm_class_project.data.easymath_dataset import EasyMathDataset  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
-            "Install the `conditional_dllm_class_project` package (from cs2420_cs2823r_final_project/) "
-            f"before using dataset_mode '{args.dataset_mode}'."
+            "Install the `conditional_dllm_class_project` package by running `pip install -e .` "
+            "inside the course repo directory before using dataset_mode "
+            f"'{args.dataset_mode}'."
         ) from exc
 
     from datasets import load_from_disk  # type: ignore
