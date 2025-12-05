@@ -18,7 +18,7 @@ _SCRIPT_PATH = Path(__file__).resolve()
 _MODEL_PATH = _SCRIPT_PATH.with_name("model.py")
 _REPO_ROOT = _SCRIPT_PATH.parents[2]
 _DATA_ROOT = _REPO_ROOT / "data"
-_LOGS_ROOT = _REPO_ROOT / "logs"
+_LOGS_ROOT = _SCRIPT_PATH.parent / "logs"
 
 code = "\n".join([
     _SCRIPT_PATH.read_text(),
