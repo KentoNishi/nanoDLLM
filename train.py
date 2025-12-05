@@ -37,12 +37,14 @@ class Hyperparameters:
     num_iterations = 10_000
     cooldown_frac = 0.8
     vocab_size = 50_257
-    val_loss_every = 125
+    val_loss_every = 10
     save_checkpoint = True
     dataset_mode = "fineweb"  # options: fineweb, combined, combined_guidance, cbt, easymath
     run_id: str | None = None
     resume_from: str | None = None
     pretrained_checkpoint: str | None = None
+    guidance_zero_init: bool = False
+    model_variant: str = "base"
 
 
 def parse_cli_overrides():
@@ -64,6 +66,8 @@ def parse_cli_overrides():
     parser.add_argument('--no-save_checkpoint', dest='save_checkpoint', action='store_false')
     parser.set_defaults(save_checkpoint=None)
     parser.add_argument('--local_rank', type=int, default=None)
+    parser.add_argument('--zero_guidance_init', action='store_true')
+    parser.add_argument('--model_variant', choices=['base', '500m'], default=None)
     cli_args, _ = parser.parse_known_args()
     return cli_args
 
@@ -175,6 +179,16 @@ def train_step(model, loader, step, optimizers, optimizer2, accum_steps):
 cli_overrides = parse_cli_overrides()
 args = Hyperparameters()
 
+MODEL_VARIANTS = {
+    "base": {},
+    "500m": {
+        "model_dim": 1280,
+        "num_heads": 20,
+        "num_layers": 20,
+        "head_dim": 64,
+    },
+}
+
 def _override(field):
     value = getattr(cli_overrides, field, None)
     if value is not None:
@@ -183,21 +197,27 @@ def _override(field):
 for name in [
     'dataset_mode', 'run_id', 'resume_from', 'pretrained_checkpoint',
     'train_seq_len', 'val_seq_len', 'grad_accum_steps_per_device',
-    'num_iterations', 'val_loss_every', 'val_tokens', 'cooldown_frac'
+    'num_iterations', 'val_loss_every', 'val_tokens', 'cooldown_frac',
+    'guidance_zero_init', 'model_variant'
 ]:
     _override(name)
 
 if getattr(cli_overrides, 'save_checkpoint', None) is not None:
     args.save_checkpoint = cli_overrides.save_checkpoint
 
+variant_overrides = MODEL_VARIANTS.get(args.model_variant)
+if variant_overrides is None:
+    raise ValueError(f"Unknown model_variant {args.model_variant}")
+variant_suffix = "" if args.model_variant == "base" else f"-{args.model_variant}"
+
 guidance_enabled = args.dataset_mode == 'combined_guidance'
 is_finetune = args.dataset_mode != 'fineweb'
 
 if is_finetune:
-    if args.num_iterations > 2000:
-        args.num_iterations = 2000
-    if args.val_loss_every > 50:
-        args.val_loss_every = 50
+    if args.num_iterations > 500:
+        args.num_iterations = 500
+    if args.val_loss_every > 5:
+        args.val_loss_every = 5
 
 rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
@@ -210,7 +230,8 @@ master_process = rank == 0
 
 default_run_id = args.run_id or os.environ.get("RUN_ID")
 if default_run_id is None:
-    default_run_id = "fineweb-base" if not is_finetune else f"{args.dataset_mode}-finetune"
+    base_name = "fineweb-base" if not is_finetune else f"{args.dataset_mode}-finetune"
+    default_run_id = f"{base_name}{variant_suffix}"
 run_id = default_run_id or str(uuid.uuid4())
 logs_root = Path("logs")
 run_dir = logs_root / run_id
@@ -225,7 +246,7 @@ if resume_path is None:
         resume_path = str(candidate)
 pretrained_path = args.pretrained_checkpoint or os.environ.get("DLLM_PRETRAINED_CHECKPOINT")
 if pretrained_path is None:
-    default_base = logs_root / "fineweb-base" / "state_latest.pt"
+    default_base = logs_root / f"fineweb-base{variant_suffix}" / "state_latest.pt"
     if default_base.exists():
         pretrained_path = str(default_base)
 
@@ -248,8 +269,10 @@ print0("=" * 100)
 
 
 model_config = BlockGPTConfig(
+    **variant_overrides,
     num_guidance_tokens=2 if guidance_enabled else 0,
     dropout=0.3 if is_finetune else 0.0,
+    guidance_zero_init=args.guidance_zero_init,
 )
 model = BlockGPT(model_config).cuda()
 
@@ -266,17 +289,25 @@ hidden_matrix_params = [
     for n, p in model.blocks.named_parameters()
     if p.ndim >= 2 and "embed" not in n
 ]
-embed_params = [p for n, p in model.named_parameters() if "embed" in n]
+guidance_params = []
+embed_params = []
+for name, param in model.named_parameters():
+    if "guidance_embed" in name:
+        guidance_params.append(param)
+    elif "embed" in name:
+        embed_params.append(param)
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
 head_params = [model.lm_head.weight]
 
 if is_finetune:
     head_lr = embed_lr = scalar_lr = 6e-5
+    guidance_lr = 6e-4
     muon_lr = 6e-5
 else:
     head_lr = 0.0011
     embed_lr = 0.06
     scalar_lr = 0.04
+    guidance_lr = 0.06
     muon_lr = 0.025
 
 adam_params = [
@@ -284,6 +315,8 @@ adam_params = [
     dict(params=embed_params, lr=embed_lr),
     dict(params=scalar_params, lr=scalar_lr),
 ]
+if guidance_params:
+    adam_params.append(dict(params=guidance_params, lr=guidance_lr))
 optimizer1 = torch.optim.Adam(
     adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True
 )
@@ -375,14 +408,15 @@ if use_fineweb:
     )
 else:
     try:
-        import cs2420_cs2823r_final_project as cs_project  # type: ignore
-        from cs2420_cs2823r_final_project.data.combined_dataset import CombinedDataset, CombinedDatasetForGuidance  # type: ignore
-        from cs2420_cs2823r_final_project.data.cbt_dataset import CBTDataset  # type: ignore
-        from cs2420_cs2823r_final_project.data.easymath_dataset import EasyMathDataset  # type: ignore
+        import conditional_dllm_class_project as cs_project  # type: ignore
+        from conditional_dllm_class_project.data.combined_dataset import CombinedDataset, CombinedDatasetForGuidance  # type: ignore
+        from conditional_dllm_class_project.data.cbt_dataset import CBTDataset  # type: ignore
+        from conditional_dllm_class_project.data.easymath_dataset import EasyMathDataset  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
-            "Install the `conditional_dllm_class_project` package (from cs2420_cs2823r_final_project/) "
-            f"before using dataset_mode '{args.dataset_mode}'."
+            "Install the `conditional_dllm_class_project` package by running `pip install -e .` "
+            "inside the course repo directory before using dataset_mode "
+            f"'{args.dataset_mode}'."
         ) from exc
 
     from datasets import load_from_disk  # type: ignore
