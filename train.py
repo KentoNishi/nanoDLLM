@@ -14,9 +14,15 @@ from muon import Muon
 from model import BlockGPT, BlockGPTConfig
 
 
+_SCRIPT_PATH = Path(__file__).resolve()
+_MODEL_PATH = _SCRIPT_PATH.with_name("model.py")
+_REPO_ROOT = _SCRIPT_PATH.parents[2]
+_DATA_ROOT = _REPO_ROOT / "data"
+_LOGS_ROOT = _REPO_ROOT / "logs"
+
 code = "\n".join([
-    open(__file__).read(),
-    open("model.py").read()
+    _SCRIPT_PATH.read_text(),
+    _MODEL_PATH.read_text(),
 ])
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -28,8 +34,8 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 @dataclass
 class Hyperparameters:
-    train_files = "data/finewebedu10B/finewebedu_train_*.bin"
-    val_files = "data/finewebedu10B/finewebedu_val_*.bin"
+    train_files = str(_DATA_ROOT / "finewebedu10B" / "finewebedu_train_*.bin")
+    val_files = str(_DATA_ROOT / "finewebedu10B" / "finewebedu_val_*.bin")
     val_tokens = 10_485_760
     train_seq_len = 4 * 1024
     val_seq_len = 8 * 1024
@@ -233,7 +239,7 @@ if default_run_id is None:
     base_name = "fineweb-base" if not is_finetune else f"{args.dataset_mode}-finetune"
     default_run_id = f"{base_name}{variant_suffix}"
 run_id = default_run_id or str(uuid.uuid4())
-logs_root = Path("logs")
+logs_root = _LOGS_ROOT
 run_dir = logs_root / run_id
 logfile = str(run_dir / "events.txt")
 if master_process:
