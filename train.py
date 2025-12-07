@@ -17,7 +17,8 @@ from model import BlockGPT, BlockGPTConfig
 _SCRIPT_PATH = Path(__file__).resolve()
 _MODEL_PATH = _SCRIPT_PATH.with_name("model.py")
 _REPO_ROOT = _SCRIPT_PATH.parents[2]
-_DATA_ROOT = _REPO_ROOT / "data"
+_NANODLLM_DATA_ROOT = _SCRIPT_PATH.parent / "data"
+_COURSE_DATA_ROOT = _REPO_ROOT / "data"
 _LOGS_ROOT = _SCRIPT_PATH.parent / "logs"
 
 code = "\n".join([
@@ -34,8 +35,8 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 @dataclass
 class Hyperparameters:
-    train_files = str(_DATA_ROOT / "finewebedu10B" / "finewebedu_train_*.bin")
-    val_files = str(_DATA_ROOT / "finewebedu10B" / "finewebedu_val_*.bin")
+    train_files = str(_NANODLLM_DATA_ROOT / "finewebedu10B" / "finewebedu_train_*.bin")
+    val_files = str(_NANODLLM_DATA_ROOT / "finewebedu10B" / "finewebedu_val_*.bin")
     val_tokens = 10_485_760
     train_seq_len = 4 * 1024
     val_seq_len = 8 * 1024
@@ -106,12 +107,23 @@ def distributed_data_generator(
     files = [Path(f) for f in sorted(glob.glob(filename_pattern))]
     assert batch_size % world_size == 0
     local_bs = batch_size // world_size
+    if not files:
+        raise RuntimeError(f"No shards found matching pattern: {filename_pattern}")
     file_iter = iter(files)
-    tokens, pos = _load_data_shard(next(file_iter)), 0
+
+    def _next_tokens(it):
+        nonlocal file_iter
+        try:
+            return _load_data_shard(next(it)), 0
+        except StopIteration:
+            file_iter = iter(files)
+            return _load_data_shard(next(file_iter)), 0
+
+    tokens, pos = _next_tokens(file_iter)
 
     while True:
         if pos + batch_size >= len(tokens):
-            tokens, pos = _load_data_shard(next(file_iter)), 0
+            tokens, pos = _next_tokens(file_iter)
         buf = tokens[pos + rank * local_bs:][:local_bs]
         inputs = buf.to(device="cuda", dtype=torch.int64, non_blocking=True)
         pos += batch_size
@@ -210,6 +222,13 @@ for name in [
 
 if getattr(cli_overrides, 'save_checkpoint', None) is not None:
     args.save_checkpoint = cli_overrides.save_checkpoint
+
+if args.dataset_mode == "fineweb":
+    _active_data_root = _NANODLLM_DATA_ROOT
+else:
+    _active_data_root = _COURSE_DATA_ROOT
+args.train_files = str(_active_data_root / "finewebedu10B" / "finewebedu_train_*.bin")
+args.val_files = str(_active_data_root / "finewebedu10B" / "finewebedu_val_*.bin")
 
 variant_overrides = MODEL_VARIANTS.get(args.model_variant)
 if variant_overrides is None:
