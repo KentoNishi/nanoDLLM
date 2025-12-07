@@ -41,7 +41,7 @@ class Hyperparameters:
     train_seq_len = 4 * 1024
     val_seq_len = 8 * 1024
     grad_accum_steps_per_device = 1
-    num_iterations = 10_000
+    num_iterations = 250
     cooldown_frac = 0.8
     vocab_size = 50_257
     val_loss_every = 10
