@@ -12,6 +12,7 @@ import torch.distributed as dist
 
 from muon import Muon
 from model import BlockGPT, BlockGPTConfig
+from model_variants import MODEL_VARIANTS
 
 
 _SCRIPT_PATH = Path(__file__).resolve()
@@ -74,7 +75,7 @@ def parse_cli_overrides():
     parser.set_defaults(save_checkpoint=None)
     parser.add_argument('--local_rank', type=int, default=None)
     parser.add_argument('--zero_guidance_init', action='store_true')
-    parser.add_argument('--model_variant', choices=['base', '500m'], default=None)
+    parser.add_argument('--model_variant', choices=list(MODEL_VARIANTS.keys()), default=None)
     cli_args, _ = parser.parse_known_args()
     return cli_args
 
@@ -196,16 +197,6 @@ def train_step(model, loader, step, optimizers, optimizer2, accum_steps):
 
 cli_overrides = parse_cli_overrides()
 args = Hyperparameters()
-
-MODEL_VARIANTS = {
-    "base": {},
-    "500m": {
-        "model_dim": 1280,
-        "num_heads": 20,
-        "num_layers": 20,
-        "head_dim": 64,
-    },
-}
 
 def _override(field):
     value = getattr(cli_overrides, field, None)
