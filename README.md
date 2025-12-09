@@ -45,6 +45,21 @@ torchrun --standalone --nproc_per_node=$(nvidia-smi -L | wc -l) train.py
 ### Data options
 - `dataset_mode=fineweb` (default): trains on FineWebEdu shards at `data/finewebedu10B/*`.
 - `dataset_mode=combined|combined_guidance|cbt|easymath`: uses the CBT/EasyMath datasets provided by the `conditional_dllm_class_project` package (install by running `pip install -e .` inside that repo directory). `combined_guidance` injects a two-class guidance signal for conditioning the diffusion model.
+- Domain-specific finetunes (`dataset_mode=cbt` or `dataset_mode=easymath`) automatically switch to the `domain60m` BlockGPT variant (~60M parameters). Override by passing `--model_variant=...` explicitly.
+- To train the domain-specific 60M models used in our ablations:
+  ```bash
+  # CBT-only diffusion finetune (~60M)
+  torchrun --standalone --nproc_per_node=$(nvidia-smi -L | wc -l) \
+    train.py --dataset_mode=cbt \
+    --run_id cbt-domain60m \
+    --pretrained_checkpoint logs/fineweb-base-rerun/state_latest.pt
+
+  # EasyMath-only diffusion finetune (~60M)
+  torchrun --standalone --nproc_per_node=$(nvidia-smi -L | wc -l) \
+    train.py --dataset_mode=easymath \
+    --run_id easymath-domain60m \
+    --pretrained_checkpoint logs/fineweb-base-rerun/state_latest.pt
+  ```
 - For guided evaluation, run `python conditional_dllm_class_project/eval/eval_diffusion.py --use-guidance ...` with checkpoints produced by the conditional run.
 
 ## Notes

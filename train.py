@@ -214,12 +214,21 @@ for name in [
 if getattr(cli_overrides, 'save_checkpoint', None) is not None:
     args.save_checkpoint = cli_overrides.save_checkpoint
 
+user_specified_variant = cli_overrides.model_variant is not None
+
 if args.dataset_mode == "fineweb":
     _active_data_root = _NANODLLM_DATA_ROOT
 else:
     _active_data_root = _COURSE_DATA_ROOT
 args.train_files = str(_active_data_root / "finewebedu10B" / "finewebedu_train_*.bin")
 args.val_files = str(_active_data_root / "finewebedu10B" / "finewebedu_val_*.bin")
+
+if (
+    args.dataset_mode in ("cbt", "easymath")
+    and not user_specified_variant
+    and args.model_variant == "base"
+):
+    args.model_variant = "domain60m"
 
 variant_overrides = MODEL_VARIANTS.get(args.model_variant)
 if variant_overrides is None:
